@@ -7,6 +7,8 @@ from collections import deque
 
 # Suppress irrelevant warnings for a cleaner terminal UI
 warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter

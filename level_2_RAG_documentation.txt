@@ -1,0 +1,903 @@
+This is a significant upgrade from your Level-1 RAG. You’ve moved from a **basic RAG → advanced production-style RAG pipeline**.
+
+Your Level-2 script introduces:
+
+1. **Hybrid Retrieval (BM25 + Vector Search)**
+2. **Cross-Encoder Reranking**
+3. **Conversation Memory**
+4. **Response Caching**
+5. **Self-Correction / Refinement Loop**
+6. **Batch Indexing**
+7. **Performance Monitoring**
+
+For explaining to teammates, don’t explain code line-by-line first. Explain it as a **pipeline/system architecture**, then go module by module.
+
+---
+
+# 1. High-Level Architecture of Level-2 RAG
+
+Your Level-2 flow looks like this:
+
+```text
+                    PDF Documents
+                           │
+                           ▼
+                 Document Loading
+                           │
+                           ▼
+                     Text Chunking
+                           │
+                           ▼
+                  Embedding Generation
+                           │
+                           ▼
+                   Chroma Vector DB
+                           │
+        ┌──────────────────┴──────────────────┐
+        │                                     │
+        ▼                                     ▼
+   BM25 Keyword Search                 Vector Search
+ (Exact keyword retrieval)       (Semantic retrieval)
+        │                                     │
+        └──────────────┬──────────────────────┘
+                       ▼
+                 Hybrid Results Merge
+                       ▼
+                Duplicate Removal
+                       ▼
+               Cross-Encoder Reranking
+                       ▼
+                Top Relevant Context
+                       ▼
+              Prompt + Conversation History
+                       ▼
+                   Llama 3.2 LLM
+                       ▼
+              Self-Correction Check
+                       ▼
+            Refine Retrieval if Needed
+                       ▼
+                  Final Response
+                       ▼
+              Cache + Conversation Memory
+```
+
+This is close to what many enterprise RAG systems do.
+
+---
+
+# 2. What Changed from Level-1?
+
+Your Level-1 pipeline:
+
+```text
+PDF → Embeddings → Chroma → Similarity Search → LLM
+```
+
+Weakness:
+
+Sometimes retrieval misses relevant content.
+
+Example:
+
+Question:
+
+> What is PDU Session Anchor?
+
+Vector search may miss exact terminology.
+
+---
+
+Level-2 solves this with:
+
+```text
+BM25 + Vector + Reranking
+```
+
+This dramatically improves retrieval quality.
+
+---
+
+# 3. Import Section — New Components
+
+These imports are your major upgrades.
+
+### BM25 Retriever
+
+```python
+from langchain_community.retrievers import BM25Retriever
+```
+
+Purpose:
+
+**Keyword-based retrieval**
+
+Think:
+
+### Traditional search engine
+
+If user asks:
+
+> N11 interface
+
+BM25 finds chunks containing exact keyword:
+
+```text
+N11
+```
+
+even if semantic embedding misses it.
+
+Very useful in telecom.
+
+Because 3GPP contains:
+
+```text
+N1
+N2
+N11
+TS23.501
+SMContext
+```
+
+Exact terminology matters.
+
+---
+
+### Cross Encoder
+
+```python
+from sentence_transformers import CrossEncoder
+```
+
+This is your smartest improvement.
+
+Purpose:
+
+### Reranking retrieved documents
+
+Instead of trusting retrieval blindly:
+
+It re-checks:
+
+> Which chunk truly answers the question?
+
+---
+
+Example
+
+Question:
+
+```text
+Explain AMF registration
+```
+
+Retrieved chunks:
+
+Chunk A:
+
+```text
+AMF registration flow
+```
+
+Chunk B:
+
+```text
+AMF scaling architecture
+```
+
+Chunk C:
+
+```text
+UE registration procedure
+```
+
+Vector DB may rank imperfectly.
+
+CrossEncoder rescoring:
+
+```text
+Chunk C → 0.98
+Chunk A → 0.90
+Chunk B → 0.32
+```
+
+Then sorts by score.
+
+This significantly improves answer quality.
+
+---
+
+### Conversation Memory
+
+```python
+from collections import deque
+```
+
+Used for:
+
+### Chat continuity
+
+Without memory:
+
+User:
+
+> Explain AMF
+
+Next question:
+
+> What about authentication?
+
+LLM forgets AMF context.
+
+With memory:
+
+It understands:
+
+> authentication in AMF flow
+
+---
+
+# 4. Initialization
+
+---
+
+## Embedding Model
+
+```python
+embeddinggemma
+```
+
+Level-1:
+
+```text
+nomic-embed-text
+```
+
+Level-2:
+
+```text
+embeddinggemma
+```
+
+Role remains same:
+
+Text → vectors.
+
+---
+
+## LLM
+
+```python
+llama3.2
+```
+
+Still answer generation model.
+
+---
+
+## Cross Encoder Loading
+
+```python
+cross_encoder = CrossEncoder(
+'cross-encoder/ms-marco-MiniLM-L-6-v2'
+)
+```
+
+This model is specialized for:
+
+### relevance scoring
+
+Input:
+
+```text
+(Query, Document)
+```
+
+Output:
+
+```text
+relevance score
+```
+
+Example:
+
+```text
+(
+"Explain PDU session",
+"PDU session establishment..."
+)
+
+→ 0.94
+```
+
+---
+
+# 5. Ingestion Pipeline
+
+Still same concept:
+
+```text
+PDF → chunks → embeddings → Chroma
+```
+
+But now improved.
+
+---
+
+## DirectoryLoader
+
+Level-1:
+
+Manual PDF selection.
+
+Level-2:
+
+```python
+DirectoryLoader()
+```
+
+Automatically loads:
+
+```text
+*.pdf
+```
+
+from data folder.
+
+Simpler for teams.
+
+No manual selection.
+
+---
+
+## Chunking
+
+```python
+chunk_size=700
+chunk_overlap=100
+```
+
+Larger chunk size.
+
+Why?
+
+Telecom procedures are longer.
+
+Example:
+
+Registration procedure spans multiple paragraphs.
+
+Too-small chunks lose flow.
+
+700 chars keeps more procedural context.
+
+---
+
+## Chunking Latency
+
+You measure:
+
+```python
+chunking_time
+```
+
+Why useful?
+
+Helps optimize:
+
+If chunking slow:
+
+* reduce overlap
+* reduce chunk size
+
+Good engineering practice.
+
+---
+
+# 6. Batch Indexing (Major Improvement)
+
+Level-1:
+
+```python
+Chroma.from_documents(chunks)
+```
+
+Problem:
+
+For huge telecom docs:
+
+Memory spikes.
+
+May freeze.
+
+---
+
+Now:
+
+```python
+BATCH_SIZE = 50
+```
+
+You process:
+
+```text
+50 chunks at a time
+```
+
+Example:
+
+1000 chunks
+
+becomes:
+
+```text
+50
+50
+50
+...
+```
+
+Benefits:
+
+### Better memory usage
+
+### Better scalability
+
+### Progress tracking
+
+---
+
+Progress bar:
+
+```text
+Indexing... 300/1200 chunks (25%)
+```
+
+Much better UX.
+
+---
+
+# 7. Dual Retriever Architecture (Biggest Upgrade)
+
+You now have:
+
+## Retriever 1 — BM25
+
+```python
+bm25_retriever
+```
+
+Finds:
+
+### exact keyword matches
+
+Example:
+
+Question:
+
+```text
+N11 interface
+```
+
+Finds exact term.
+
+---
+
+## Retriever 2 — Vector Search
+
+```python
+vector_retriever
+```
+
+Finds:
+
+### semantic meaning
+
+Example:
+
+Question:
+
+> Which node manages mobility?
+
+Retrieves:
+
+```text
+AMF handles mobility
+```
+
+Even without exact wording.
+
+---
+
+## Why Hybrid Retrieval?
+
+Because each has weaknesses.
+
+### BM25 weakness
+
+No semantic understanding.
+
+Question:
+
+> node managing mobility
+
+May miss:
+
+```text
+AMF mobility function
+```
+
+---
+
+### Vector weakness
+
+May miss exact telecom keywords.
+
+Question:
+
+```text
+TS23.502
+```
+
+Could fail.
+
+---
+
+Together:
+
+```text
+BM25 + Vector = Best of both worlds
+```
+
+This is enterprise RAG design.
+
+---
+
+# 8. Chat Loop
+
+Starts infinite Q&A session.
+
+---
+
+# 9. Cache Layer (Huge Optimization)
+
+```python
+query_cache = {}
+```
+
+Purpose:
+
+Avoid repeated LLM calls.
+
+Example:
+
+User asks:
+
+```text
+What is AMF?
+```
+
+Second time:
+
+Instead of:
+
+```text
+Search + Generation
+```
+
+returns instantly.
+
+---
+
+Cache key:
+
+```python
+query_text.strip().lower()
+```
+
+Makes:
+
+```text
+What is AMF?
+what is amf?
+```
+
+same query.
+
+Excellent optimization.
+
+---
+
+# 10. Conversation Memory
+
+```python
+deque(maxlen=6)
+```
+
+Stores:
+
+### Last 3 Q&A pairs
+
+Example:
+
+```text
+User: Explain AMF
+Assistant: ...
+
+User: Explain SMF
+Assistant: ...
+```
+
+Injected into prompt.
+
+---
+
+Why?
+
+Enables contextual conversation.
+
+Example:
+
+User:
+
+> Explain AMF registration
+
+Then:
+
+> what happens next?
+
+Without memory:
+
+Confused.
+
+With memory:
+
+Understands continuation.
+
+---
+
+# 11. Stage-1 Retrieval
+
+This is now multi-step.
+
+---
+
+## Step 1 — BM25 Search
+
+```python
+bm25_results
+```
+
+Keyword search.
+
+---
+
+## Step 2 — Vector Search
+
+```python
+vector_results
+```
+
+Semantic search.
+
+---
+
+## Step 3 — Merge
+
+```python
+results =
+bm25_results + vector_results
+```
+
+Combined pool.
+
+---
+
+## Step 4 — Deduplication
+
+Same chunk may appear twice.
+
+You remove duplicates:
+
+```python
+seen = set()
+```
+
+Good engineering.
+
+Avoid redundant context.
+
+---
+
+# 12. Reranking (Most Important Part)
+
+This is where your Level-2 becomes advanced.
+
+You do:
+
+```python
+pairs = [
+(query, doc)
+]
+```
+
+Then:
+
+```python
+scores =
+cross_encoder.predict()
+```
+
+Example:
+
+Question:
+
+```text
+Explain NAS security
+```
+
+Chunks:
+
+| Chunk                  | Score |
+| ---------------------- | ----- |
+| NAS security procedure | 0.95  |
+| Authentication server  | 0.76  |
+| UPF scaling            | 0.12  |
+
+Top chunks selected.
+
+---
+
+Then:
+
+```python
+top_results[:5]
+```
+
+Only best context sent to LLM.
+
+This reduces hallucination.
+
+---
+
+# 13. Prompt Engineering
+
+You improved it.
+
+Now includes:
+
+### Role
+
+```text
+Professional 3GPP packet core expert
+```
+
+---
+
+### History
+
+```text
+CONVERSATION HISTORY
+```
+
+---
+
+### Context
+
+Retrieved chunks.
+
+---
+
+### Strict fallback
+
+If no answer:
+
+```text
+I am sorry...
+```
+
+Reduces hallucinations.
+
+---
+
+# 14. Self-Correction Loop (Very Smart)
+
+This is production-style logic.
+
+You ask LLM:
+
+> Was my answer actually good?
+
+---
+
+Correction prompt:
+
+```text
+REFINE or OK
+```
+
+If poor answer:
+
+```text
+REFINE
+```
+
+Then system:
+
+### Retrieves more chunks
+
+Top 5 → Top 10
+
+Retries answer generation.
+
+This is called:
+
+### Reflective RAG
+
+or
+
+### Self-correcting RAG
+
+Very advanced idea.
+
+---
+
+# 15. Source Attribution
+
+Shows source PDFs.
+
+Important for:
+
+### explainability
+
+Team trust.
+
+---
+
+# 16. Latency Metrics
+
+Tracks:
+
+### Retrieval time
+
+### Generation time
+
+### Total time
+
+Useful for benchmarking.
+
+---
+
+# 17. Why This Script is Better than Level-1
+
+| Feature          | Level-1 | Level-2 |
+| ---------------- | ------: | ------: |
+| Vector search    |       ✅ |       ✅ |
+| BM25             |       ❌ |       ✅ |
+| Hybrid Retrieval |       ❌ |       ✅ |
+| Reranking        |       ❌ |       ✅ |
+| Memory           |       ❌ |       ✅ |
+| Cache            |       ❌ |       ✅ |
+| Self-correction  |       ❌ |       ✅ |
+| Batch indexing   |       ❌ |       ✅ |
+
+---
+
+# 18. One-Line Team Explanation
+
+You can explain your Level-2 system like this:
+
+> “We use a hybrid RAG pipeline that combines keyword search and semantic search, reranks results using a cross-encoder, injects conversation memory into prompts, performs self-correction for weak responses, and caches repeated queries for faster performance.”
+
+---
+
+### One important correction in your explanation to teammates
+
+This is not just “Level-2 RAG”.
+
+Technically, your architecture is:
+
+> **Hybrid RAG + Reranking + Conversational Memory + Self-Reflective Retrieval**
+
+That sounds much stronger in a technical presentation.
